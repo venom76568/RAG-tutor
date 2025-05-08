@@ -6,38 +6,57 @@ import io
 
 class DocumentProcessor:
     @staticmethod
+    def is_two_page_layout(image: Image.Image) -> bool:
+        """
+        Heuristic: Check if both halves of the image have significant OCR-detected text.
+        """
+        w, h = image.size
+        left_img = image.crop((0, 0, w // 2, h))
+        right_img = image.crop((w // 2, 0, w, h))
+
+        left_text = pytesseract.image_to_string(left_img).strip()
+        right_text = pytesseract.image_to_string(right_img).strip()
+
+        return len(left_text) > 100 and len(right_text) > 100
+
+    @staticmethod
     def load_pdf(file_path: Path) -> str:
         """
-        Extract text from a PDF file.
-        Falls back to OCR using Tesseract if no extractable text is found.
+        Extracts text from a PDF, automatically detecting single vs double pages.
+        Uses OCR when necessary. Leaves [IMAGE PAGE] if no text found.
         """
         file_path = Path(file_path)
-        text = ""
+        full_text = ""
 
         try:
             with fitz.open(file_path) as doc:
-                for page in doc:
-                    text += page.get_text()
+                for idx, page in enumerate(doc):
+                    page_text = page.get_text().strip()
 
-            if not text.strip():
-                # No extractable text found — use OCR
-                images = []
-                with fitz.open(file_path) as doc:
-                    for page in doc:
-                        pix = page.get_pixmap()
+                    if not page_text:
+                        # Fallback to OCR
+                        pix = page.get_pixmap(dpi=300)
                         img = Image.open(io.BytesIO(pix.tobytes()))
-                        images.append(img)
 
-                text = "\n".join(pytesseract.image_to_string(img) for img in images)
+                        # Check for double-page layout using OCR on halves
+                        if DocumentProcessor.is_two_page_layout(img):
+                            w, h = img.size
+                            left_img = img.crop((0, 0, w // 2, h))
+                            right_img = img.crop((w // 2, 0, w, h))
 
-            return text
+                            left_text = pytesseract.image_to_string(left_img).strip()
+                            right_text = pytesseract.image_to_string(right_img).strip()
+                            page_text = f"{left_text}\n{right_text}".strip()
+                        else:
+                            page_text = pytesseract.image_to_string(img).strip()
+
+                        if not page_text:
+                            page_text = "[IMAGE PAGE]"
+
+                    full_text += f"\n--- Page {idx + 1} ---\n{page_text}\n"
+
+            return full_text
 
         except Exception as e:
             raise RuntimeError(f"Failed to load PDF: {file_path.name} → {str(e)}")
 
-
-# Example usage
-if __name__ == "__main__":
-    processor = DocumentProcessor()
-    extracted_text = processor.load_pdf("huffman_codes.pdf")
-    print(extracted_text)
